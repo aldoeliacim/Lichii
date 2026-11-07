@@ -185,15 +185,22 @@ bool Scheduler::DeferFlush() {
     // kept the Vulkan worker busy submitting. Batched within 500 us: ~10-15% more fps there.
     // Command list copies after dispatches were ~9,000 more a second, of which the front waited
     // for about 5%.
-    static const s64 interval_us = [] {
+    // Ocarina of Time submits at once: with the window it flashed white and ran slower (Lake
+    // Hylia 52.3 fps with it, 55.4 without; EvilOOT's measurement in Frizti's fork, 526b9f240a).
+    // Decided at the first fence, once the game's program id is set.
+    if (fence_flush_interval_us < 0) {
+        constexpr u64 OcarinaOfTimeProgramId = 0x0400486024DEC000ULL;
         const char* value = std::getenv("EDEN_NX2_FENCE_FLUSH_US");
         if (value != nullptr) {
-            return static_cast<s64>(std::atoll(value));
+            fence_flush_interval_us = std::max<s64>(std::atoll(value), 0);
+        } else {
+            fence_flush_interval_us =
+                Settings::GetCurrentProgramID() == OcarinaOfTimeProgramId ? 0 : 500;
         }
-        return s64{500};
-    }();
-    if (interval_us <= 0 || !VideoCommon::GpuSplit::OnBackThread() ||
-        std::chrono::steady_clock::now() - last_flush >= std::chrono::microseconds{interval_us}) {
+    }
+    if (fence_flush_interval_us == 0 || !VideoCommon::GpuSplit::OnBackThread() ||
+        std::chrono::steady_clock::now() - last_flush >=
+            std::chrono::microseconds{fence_flush_interval_us}) {
         return false;
     }
     flush_pending = true;
