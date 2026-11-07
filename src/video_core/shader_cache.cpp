@@ -10,6 +10,7 @@
 #include <exception>
 #include <functional>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 #include <fmt/ranges.h>
 #include <array>
@@ -269,7 +270,7 @@ const ShaderInfo* ShaderCache::ComputeShader() {
                                                      *kepler_compute, *gpu_memory, bank, offset);
                                              }))
             throw Shader::Ampere::TrapGuardError{};
-    } else if (kepler_compute->IsNativeMode() && IsRejected(*cpu_shader_addr)) {
+    } else if (kepler_compute->IsNativeMode() && IsRejectedQuietly(*cpu_shader_addr)) {
         // A rejected program fails the same way on every dispatch. GetGraphicsEnvironments
         // skips those draws without rethrowing; doing the same here avoids two C++ throws, a
         // mutex-guarded insert and an exception_ptr for each dispatch of the program. The
@@ -309,13 +310,19 @@ const ShaderInfo* ShaderCache::ComputeShader() {
 void ShaderCache::RethrowIfRejected(VAddr addr) {
     std::scoped_lock lock{rejected_mutex};
     if (const auto it = rejected_native.find(addr); it != rejected_native.end()) {
-        std::rethrow_exception(it->second);
+        std::rethrow_exception(it->second.error);
     }
 }
 
 bool ShaderCache::IsRejected(VAddr addr) {
     std::scoped_lock lock{rejected_mutex};
     return rejected_native.contains(addr);
+}
+
+bool ShaderCache::IsRejectedQuietly(VAddr addr) {
+    std::scoped_lock lock{rejected_mutex};
+    const auto it = rejected_native.find(addr);
+    return it != rejected_native.end() && !it->second.stand_in;
 }
 
 void ShaderCache::RememberRejection(VAddr addr) {
@@ -325,7 +332,14 @@ void ShaderCache::RememberRejection(VAddr addr) {
         // capturing and inserting a new one on every rejected dispatch.
         return;
     }
-    rejected_native.emplace(addr, std::current_exception());
+    bool stand_in = false;
+    try {
+        throw;
+    } catch (const Shader::Exception& error) {
+        stand_in = std::string_view{error.what()}.find("matrix multiply") != std::string_view::npos;
+    } catch (...) {
+    }
+    rejected_native.emplace(addr, Rejection{std::current_exception(), stand_in});
     rejected_lowest.store((std::min)(rejected_lowest.load(std::memory_order_relaxed), addr),
                           std::memory_order_relaxed);
     rejected_highest.store((std::max)(rejected_highest.load(std::memory_order_relaxed), addr),

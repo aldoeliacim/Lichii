@@ -160,6 +160,11 @@ private:
     void RethrowIfRejected(VAddr addr);
     /// Whether a native program at this address was rejected.
     bool IsRejected(VAddr addr);
+    /// Whether a native program at this address was rejected and its dispatches can be skipped
+    /// without the error: true except for rejections the dispatcher stands in for (a matrix
+    /// multiply the host does not emulate gets KeplerCompute::UpscaleInsteadOfNativeProgram, which
+    /// needs that error on every dispatch, or the program's output is never drawn).
+    bool IsRejectedQuietly(VAddr addr);
     /// Remembers the exception being handled as this address's rejection.
     void RememberRejection(VAddr addr);
     /// Hash of the state task and mesh programs are translated with.
@@ -178,7 +183,11 @@ private:
     /// Native programs the lowering rejected, by address, so each draw or dispatch rethrows the
     /// first error instead of lowering again; dropped when guest memory there is written.
     std::mutex rejected_mutex;
-    ::Common::unordered_map<u64, std::exception_ptr> rejected_native;
+    struct Rejection {
+        std::exception_ptr error;
+        bool stand_in{}; ///< Rethrown on every dispatch (see IsRejectedQuietly).
+    };
+    ::Common::unordered_map<u64, Rejection> rejected_native;
     /// Bounds of every address ever rejected (never shrinks): a quick test for invalidations.
     std::atomic<VAddr> rejected_lowest{~VAddr{}};
     std::atomic<VAddr> rejected_highest{};
